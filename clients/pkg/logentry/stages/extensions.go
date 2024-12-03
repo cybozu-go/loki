@@ -3,6 +3,7 @@ package stages
 import (
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -14,8 +15,9 @@ import (
 )
 
 const (
-	RFC3339Nano         = "RFC3339Nano"
-	MaxPartialLinesSize = 100 // Max buffer size to hold partial lines.
+	RFC3339Nano              = "RFC3339Nano"
+	MaxPartialLinesSize      = 100 // Max buffer size to hold partial lines.
+	DefaultMaxPartialLineAge = time.Minute
 )
 
 // NewDocker creates a Docker json log format specific pipeline stage.
@@ -68,7 +70,7 @@ func (*cri) Cleanup() {
 func (c *cri) Run(entry chan Entry) chan Entry {
 	entry = c.base.Run(entry)
 
-	in := RunWithSkipOrSendMany(entry, func(e Entry) ([]Entry, bool) {
+	in := RunWithSkipOrSendManyWithTick(entry, func(e Entry) ([]Entry, bool) {
 		fingerprint := e.Labels.Fingerprint()
 
 		// We received partial-line (tag: "P")
@@ -115,6 +117,23 @@ func (c *cri) Run(entry chan Entry) chan Entry {
 			delete(c.partialLines, fingerprint)
 		}
 		return []Entry{e}, false
+	}, 10*time.Second, func() []Entry {
+		// Send partial lines which are left unsent for a while.
+		threshold := time.Now().Add(-c.cfg.MaxPartialLineAge)
+
+		entries := make([]Entry, 0)
+		fingerprints := make([]model.Fingerprint, 0)
+		for k, v := range c.partialLines {
+			if v.Timestamp.Before(threshold) {
+				level.Warn(c.base.logger).Log("msg", "flushing partial line due to max age", "labels", v.Labels)
+				entries = append(entries, v)
+				fingerprints = append(fingerprints, k)
+			}
+		}
+		for _, fp := range fingerprints {
+			delete(c.partialLines, fp)
+		}
+		return entries
 	})
 
 	return in
@@ -131,12 +150,16 @@ type CriConfig struct {
 	MaxPartialLines            int              `mapstructure:"max_partial_lines"`
 	MaxPartialLineSize         flagext.ByteSize `mapstructure:"max_partial_line_size"`
 	MaxPartialLineSizeTruncate bool             `mapstructure:"max_partial_line_size_truncate"`
+	MaxPartialLineAge          time.Duration    `mapstructure:"max_partial_line_age"`
 }
 
 // validateCriConfig validates the CriConfig for the cri stage
 func validateCriConfig(cfg *CriConfig) error {
 	if cfg.MaxPartialLines == 0 {
 		cfg.MaxPartialLines = MaxPartialLinesSize
+	}
+	if cfg.MaxPartialLineAge == time.Duration(0) {
+		cfg.MaxPartialLineAge = DefaultMaxPartialLineAge
 	}
 	return nil
 }

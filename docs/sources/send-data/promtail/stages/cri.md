@@ -23,6 +23,10 @@ cri:
 
   # Allows to pretruncate partial lines before storing in partial buffer.
   [max_partial_line_size_truncate: <bool> | default = false]
+
+  # The maximum duration of a partial line in memory.
+  # If a partial line is left unsent for longer than this, the line will be flushed as a complete line.
+  [max_partial_line_age: <duration> | default = 1m]
 ```
 
 Unlike most stages, the `cri` stage provides no configuration options and only

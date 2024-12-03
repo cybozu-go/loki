@@ -3,6 +3,7 @@ package stages
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/go-kit/log"
 	"github.com/pkg/errors"
@@ -98,7 +99,7 @@ func RunWithSkip(input chan Entry, process func(e Entry) (Entry, bool)) chan Ent
 	return out
 }
 
-// RunWithSkiporSendMany same as RunWithSkip, except it can either skip sending it to output channel, if `process` functions returns `skip` true. Or send many entries.
+// RunWithSkipoOrSendMany same as RunWithSkip, except it can either skip sending it to output channel, if `process` functions returns `skip` true. Or send many entries.
 func RunWithSkipOrSendMany(input chan Entry, process func(e Entry) ([]Entry, bool)) chan Entry {
 	out := make(chan Entry)
 	go func() {
@@ -110,6 +111,38 @@ func RunWithSkipOrSendMany(input chan Entry, process func(e Entry) ([]Entry, boo
 			}
 			for _, result := range results {
 				out <- result
+			}
+		}
+	}()
+
+	return out
+}
+
+// RunWithSkipOrSendManyWithTick same as RunWithSkipOrSendMany, except it can run `tick` function periodically.
+func RunWithSkipOrSendManyWithTick(input chan Entry, process func(e Entry) ([]Entry, bool), interval time.Duration, tick func() []Entry) chan Entry {
+	out := make(chan Entry)
+	go func() {
+		defer close(out)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case e, ok := <-input:
+				if !ok {
+					return
+				}
+				results, skip := process(e)
+				if skip {
+					continue
+				}
+				for _, result := range results {
+					out <- result
+				}
+			case <-ticker.C:
+				results := tick()
+				for _, result := range results {
+					out <- result
+				}
 			}
 		}
 	}()
